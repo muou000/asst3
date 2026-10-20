@@ -52,21 +52,21 @@ static inline int nextPow2(int n) {
 // 但当然不会超过 N 向上舍入后的下一个 2 的幂。
 //
 // 此外，根据 cudaScan() 中的注释，你可以实现“原地 (in-place)”扫描，因为测试框架会复制 input 并放入 result 中。
-__device__ void up_sweep_kernel(float* input, int N, int step) {
+__global__ void up_sweep_kernel(int* data, int two_d, int two_dplus1, int rounded_length) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
-    index = index + step * (index + 1) - 1;
-    if(index < N - step) {
-    input[index + step] = input[index] + input[index + step];
+    int i = index * two_dplus1;
+    if (i + two_dplus1 - 1 < rounded_length) {
+        data[i + two_dplus1 - 1] += data[i + two_d - 1];
     }
 }
 
-__device__ void down_sweep_kernel(float* input, int N, int step) {
+__global__ void down_sweep_kernel(int* data, int two_d, int two_dplus1, int rounded_length) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
-    index = index + step * (index + 1) - 1;
-    if(index < N - step) {
-        float temp = input[index];
-        input[index] = input[index + step];
-        input[index + step] = temp + input[index + step];
+    int i = index * two_dplus1;
+    if (i + two_dplus1 - 1 < rounded_length) {
+        int t = data[i + two_d - 1];
+        data[i + two_d - 1] = data[i + two_dplus1 - 1];
+        data[i + two_dplus1 - 1] += t;
     }
 }
 
@@ -86,23 +86,33 @@ void exclusive_scan(int* input, int N, int* result)
     // 在此处实现你的排他性扫描 (exclusive scan)。
     // 请记住：虽然此函数的参数是在设备上分配的数组，但此函数本身是在 CPU 线程上运行的。
     // 你的实现需要多次调用 CUDA 核函数（你需要自己编写这些核函数）来完成扫描。
-    for(int step = 1; step < N; step *= 2) {
-        int threadsNum = N / step;
-        blocks = (threadsNum + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-        up_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(input, N, step);
-        cudaDeviceSynchronize();
+    if (N <= 0) return;
+
+    int rounded_length = nextPow2(N);
+
+    // If result != input, copy input to result first so we can perform scan in-place on result
+    if (result != input) {
+        cudaMemcpy(result, input, rounded_length * sizeof(int), cudaMemcpyDeviceToDevice);
     }
 
-    input[N - 1] = 0;
-
-    for(int step = N / 2; step >= 1; step /= 2) {
-        int threadsNum = N / step;
-        blocks = (threadsNum + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-        down_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(input, N, step);
-        cudaDeviceSynchronize();
+    // Up-sweep (reduce) phase
+    for (int two_d = 1; two_d < rounded_length; two_d *= 2) {
+        int two_dplus1 = 2 * two_d;
+        int num_threads = rounded_length / two_dplus1;
+        int blocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        up_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(result, two_d, two_dplus1, rounded_length);
     }
 
-    result = input;
+    // Set the root to 0
+    cudaMemset(&result[rounded_length - 1], 0, sizeof(int));
+
+    // Down-sweep phase
+    for (int two_d = rounded_length / 2; two_d >= 1; two_d /= 2) {
+        int two_dplus1 = 2 * two_d;
+        int num_threads = rounded_length / two_dplus1;
+        int blocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        down_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(result, two_d, two_dplus1, rounded_length);
+    }
 }
 
 
@@ -216,7 +226,7 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 // find_repeats --
 // 给定整数数组 `device_input`，返回满足 `device_input[i] == device_input[i+1]` 的所有下标 `i` 的数组。
 // 返回找到的相邻重复对的总数。
-__device__ void find_repeats_kernel(int* device_input, int N, int* device_flags) {
+__global__ void find_repeats_kernel(int* device_input, int N, int* device_flags) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if(index < N - 1) {
         if(device_input[index] == device_input[index + 1]) {
@@ -227,7 +237,16 @@ __device__ void find_repeats_kernel(int* device_input, int N, int* device_flags)
     }
 }
 
-__global__ int find_repeats(int* device_input, int length, int* device_output) {
+__global__ void scatter_kernel(int* device_input, int* device_flags, int* device_scan, int* device_output, int N) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index < N - 1) {
+        if(device_flags[index] == 1) {
+            device_output[device_scan[index]] = index;
+        }
+    }
+}
+
+int find_repeats(int* device_input, int length, int* device_output) {
 
     // CS149 TODO:
     //
@@ -247,17 +266,18 @@ __global__ int find_repeats(int* device_input, int length, int* device_output) {
     // 注意：与 scan 代码中一样，调用方代码确保分配的数组大小为 2 的幂，
     // 因此你可以对它们使用你的 exclusive_scan 函数。
     // 但是，在给定实际数组长度的情况下，你的实现必须确保 find_repeats 的结果是正确的。
+    int blocks = (length + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     int *device_flags;
     cudaMalloc((void **)&device_flags, length * sizeof(int));
-    find_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_input, length, scan_result, device_flags);
-    cudaDeviceSynchronize();
-    int result = 0;
-    for(int i = 0; i < length - 1; i++) {
-        if(device_flags[i] == 1) {
-            device_output[0] = i;
-            result++;
-        }
-    }
+    find_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_input, length, device_flags);
+
+    int *device_scan;
+    cudaMalloc((void **)&device_scan, length * sizeof(int));
+    exclusive_scan(device_flags, length, device_scan);
+
+    scatter_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_input, device_flags, device_scan, device_output, length);
+
+    int result = cudaMemcpy(&result, &device_scan[length - 1], sizeof(int), cudaMemcpyDeviceToHost);
     return result;
 }
 
