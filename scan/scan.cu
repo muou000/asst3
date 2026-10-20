@@ -52,6 +52,24 @@ static inline int nextPow2(int n) {
 // 但当然不会超过 N 向上舍入后的下一个 2 的幂。
 //
 // 此外，根据 cudaScan() 中的注释，你可以实现“原地 (in-place)”扫描，因为测试框架会复制 input 并放入 result 中。
+__device__ void up_sweep_kernel(float* input, int N, int step) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    index = index + step * (index + 1) - 1;
+    if(index < N - step) {
+    input[index + step] = input[index] + input[index + step];
+    }
+}
+
+__device__ void down_sweep_kernel(float* input, int N, int step) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    index = index + step * (index + 1) - 1;
+    if(index < N - step) {
+        float temp = input[index];
+        input[index] = input[index + step];
+        input[index + step] = temp + input[index + step];
+    }
+}
+
 void exclusive_scan(int* input, int N, int* result)
 {
 
@@ -68,8 +86,23 @@ void exclusive_scan(int* input, int N, int* result)
     // 在此处实现你的排他性扫描 (exclusive scan)。
     // 请记住：虽然此函数的参数是在设备上分配的数组，但此函数本身是在 CPU 线程上运行的。
     // 你的实现需要多次调用 CUDA 核函数（你需要自己编写这些核函数）来完成扫描。
+    for(int step = 1; step < N; step *= 2) {
+        int threadsNum = N / step;
+        blocks = (threadsNum + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        up_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(input, N, step);
+        cudaDeviceSynchronize();
+    }
 
+    input[N - 1] = 0;
 
+    for(int step = N / 2; step >= 1; step /= 2) {
+        int threadsNum = N / step;
+        blocks = (threadsNum + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        down_sweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(input, N, step);
+        cudaDeviceSynchronize();
+    }
+
+    result = input;
 }
 
 
@@ -88,7 +121,7 @@ double cudaScan(int* inarray, int* end, int* resultarray)
 {
     int* device_result;
     int* device_input;
-    int N = end - inarray;  
+    int N = end - inarray;
 
     // This code rounds the arrays provided to exclusive_scan up
     // to a power of 2, but elements after the end of the original
@@ -105,7 +138,7 @@ double cudaScan(int* inarray, int* end, int* resultarray)
     // 这会在非 2 的幂输入上导致额外的计算工作，但换取仅支持 2 的幂解法的简洁性是值得的。
 
     int rounded_length = nextPow2(end - inarray);
-    
+
     cudaMalloc((void **)&device_result, sizeof(int) * rounded_length);
     cudaMalloc((void **)&device_input, sizeof(int) * rounded_length);
 
@@ -127,11 +160,11 @@ double cudaScan(int* inarray, int* end, int* resultarray)
     // Wait for completion / 等待 GPU 完成
     cudaDeviceSynchronize();
     double endTime = CycleTimer::currentSeconds();
-       
+
     cudaMemcpy(resultarray, device_result, (end - inarray) * sizeof(int), cudaMemcpyDeviceToHost);
 
     double overallDuration = endTime - startTime;
-    return overallDuration; 
+    return overallDuration;
 }
 
 
@@ -153,7 +186,7 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
     int length = end - inarray;
     thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
     thrust::device_ptr<int> d_output = thrust::device_malloc<int>(length);
-    
+
     cudaMemcpy(d_input.get(), inarray, length * sizeof(int), cudaMemcpyHostToDevice);
 
     double startTime = CycleTimer::currentSeconds();
@@ -162,14 +195,14 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 
     cudaDeviceSynchronize();
     double endTime = CycleTimer::currentSeconds();
-   
+
     cudaMemcpy(resultarray, d_output.get(), length * sizeof(int), cudaMemcpyDeviceToHost);
 
     thrust::device_free(d_input);
     thrust::device_free(d_output);
 
     double overallDuration = endTime - startTime;
-    return overallDuration; 
+    return overallDuration;
 }
 
 
@@ -183,14 +216,25 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 // find_repeats --
 // 给定整数数组 `device_input`，返回满足 `device_input[i] == device_input[i+1]` 的所有下标 `i` 的数组。
 // 返回找到的相邻重复对的总数。
-int find_repeats(int* device_input, int length, int* device_output) {
+__device__ void find_repeats_kernel(int* device_input, int N, int* device_flags) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index < N - 1) {
+        if(device_input[index] == device_input[index + 1]) {
+            device_flags[index] = 1;
+        } else {
+            device_flags[index] = 0;
+        }
+    }
+}
+
+__global__ int find_repeats(int* device_input, int length, int* device_output) {
 
     // CS149 TODO:
     //
     // Implement this function. You will probably want to
     // make use of one or more calls to exclusive_scan(), as well as
     // additional CUDA kernel launches.
-    //    
+    //
     // Note: As in the scan code, the calling code ensures that
     // allocated arrays are a power of 2 in size, so you can use your
     // exclusive_scan function with them. However, your implementation
@@ -203,8 +247,18 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // 注意：与 scan 代码中一样，调用方代码确保分配的数组大小为 2 的幂，
     // 因此你可以对它们使用你的 exclusive_scan 函数。
     // 但是，在给定实际数组长度的情况下，你的实现必须确保 find_repeats 的结果是正确的。
-
-    return 0; 
+    int *device_flags;
+    cudaMalloc((void **)&device_flags, length * sizeof(int));
+    find_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_input, length, scan_result, device_flags);
+    cudaDeviceSynchronize();
+    int result = 0;
+    for(int i = 0; i < length - 1; i++) {
+        if(device_flags[i] == 1) {
+            device_output[0] = i;
+            result++;
+        }
+    }
+    return result;
 }
 
 
@@ -218,14 +272,14 @@ double cudaFindRepeats(int *input, int length, int *output, int *output_length) 
     int *device_input;
     int *device_output;
     int rounded_length = nextPow2(length);
-    
+
     cudaMalloc((void **)&device_input, rounded_length * sizeof(int));
     cudaMalloc((void **)&device_output, rounded_length * sizeof(int));
     cudaMemcpy(device_input, input, length * sizeof(int), cudaMemcpyHostToDevice);
 
     cudaDeviceSynchronize();
     double startTime = CycleTimer::currentSeconds();
-    
+
     int result = find_repeats(device_input, length, device_output);
 
     cudaDeviceSynchronize();
@@ -238,7 +292,7 @@ double cudaFindRepeats(int *input, int length, int *output, int *output_length) 
     cudaFree(device_input);
     cudaFree(device_output);
 
-    float duration = endTime - startTime; 
+    float duration = endTime - startTime;
     return duration;
 }
 
@@ -262,5 +316,5 @@ void printCudaInfo()
                static_cast<float>(deviceProps.totalGlobalMem) / (1024 * 1024));
         printf("   CUDA Cap:   %d.%d\n", deviceProps.major, deviceProps.minor);
     }
-    printf("---------------------------------------------------------\n"); 
+    printf("---------------------------------------------------------\n");
 }
