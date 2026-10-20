@@ -5,6 +5,11 @@
 // exclusive scan you implemented in Part 1 uses slower *global* memory, and has
 // overhead from performing multiple kernel launches.
 // Because it uses shared memory, it must be run within a single thread block.
+//
+// 这是排他性扫描 (exclusive scan) 的共享内存 (shared memory) 实现。
+// 请注意，你在第二部分中实现的排他性扫描使用的是较慢的 *全局显存 (global memory)*，
+// 并且存在执行多次核函数启动的开销。
+// 由于此实现使用共享内存，因此它必须在单个线程块内部运行。
 
 
 // REQUIREMENTS:
@@ -17,26 +22,43 @@
 //    Note: shared-memory exclusive scan works correctly only if SCAN_BLOCK_DIM <= 1024
 //  - The parameter sScratch should be a pointer to an array with 2*SCAN_BLOCK_DIM elements
 //  - The 3 arrays should be in shared memory. 
+//
+// 要求：
+//  - 输入数组长度必须是 2 的幂次方。
+//  - 线程块中的线程数必须等于数组的大小！
+//  - SCAN_BLOCK_DIM 既是块中的线程数（必须是 2 的幂），也是将要被扫描的元素个数。
+//    你应该根据你的实现在 cudaRenderer.cu 文件中定义它。
+//    注意：共享内存排他性扫描仅在 SCAN_BLOCK_DIM <= 1024 时才能正确工作。
+//  - 参数 sScratch 应为指向具有 2*SCAN_BLOCK_DIM 个元素的数组的指针。
+//  - 这 3 个数组都应该位于共享内存中 (__shared__)。
 
 // ================= USAGE (in cudaRenderer.cu) =====================
+// ================= 使用方法（在 cudaRenderer.cu 中） =====================
 
 // at the top of the file:
+// 在文件顶部：
 
-// #define SCAN_BLOCK_DIM   BLOCKSIZE  // needed by sharedMemExclusiveScan implementation
+// #define SCAN_BLOCK_DIM   BLOCKSIZE  // needed by sharedMemExclusiveScan implementation (sharedMemExclusiveScan 实现所需)
 // #include "exclusiveScan.cu_inl"
 
 // ...
 
 // in a kernel:
+// 在核函数内：
 
 // If you're using 2D indices, compute a linear thread index as folows.
 // NOTE: scan assumes that every 32 adjacent linear thread indices 
 // (0-31, 32-63, ...) form a warp, which means they execute in lockstep.
+// 如果你使用 2D 索引，请按如下方式计算线性线程索引。
+// 注意：scan 假设每 32 个相邻的线性线程索引（0-31, 32-63, ...）组成一个 warp，这意味着它们同步（步调一致）执行。
 
 // If you do linearThreadIndex = threadIdx.x * blockDim.x + threadIdx.y;
 // you will get a linear thread index, but it won't be sorted into warps,
 // which will break scan!
-
+// 如果你写成 linearThreadIndex = threadIdx.x * blockDim.x + threadIdx.y;
+// 你虽然得到了线性索引，但它不会被正确组织到 warp 中，这会破坏 scan！
+//
+// 正确写法如下：
 // int linearThreadIndex =  threadIdx.y * blockDim.x + threadIdx.x;
 
 // __shared__ uint prefixSumInput[BLOCKSIZE];
@@ -48,18 +70,22 @@
 #define LOG2_WARP_SIZE 5U
 #define WARP_SIZE (1U << LOG2_WARP_SIZE)
 
-//Almost the same as naive scan1Inclusive, but doesn't need __syncthreads()
-//assuming size <= WARP_SIZE
+// Almost the same as naive scan1Inclusive, but doesn't need __syncthreads()
+// assuming size <= WARP_SIZE
+// 几乎与朴素的 scan1Inclusive 相同，但假设 size <= WARP_SIZE，因此不需要 __syncthreads()
 inline __device__ uint
 warpScanInclusive(int threadIndex, uint idata, volatile uint *s_Data, uint size){
     // Note some of the calculations are obscure because they are optimized.
     // For example, (threadIndex & (size - 1)) computes threadIndex % size,
     // which works, assuming size is a power of 2.
+    // 注意某些计算为了优化显得晦涩。
+    // 例如，(threadIndex & (size - 1)) 计算 threadIndex % size（假设 size 为 2 的幂）。
 
     const uint lane = threadIndex & 31;
     unsigned full = __activemask();
     unsigned mask = __ballot_sync(full, lane < size);
     // If this lane doesn't participate, exit before any masked syncs
+    // 如果此 lane 不参与，在任何带掩码的同步之前退出
     if ((mask & (1u << lane)) == 0) return 0;
 
     uint pos = 2 * threadIndex - (threadIndex & (size - 1));
@@ -89,28 +115,32 @@ sharedMemExclusiveScan(int threadIndex, uint* sInput, uint* sOutput, volatile ui
 
         uint idata = sInput[threadIndex];
 
-        //Bottom-level inclusive warp scan
+        // Bottom-level inclusive warp scan / 底层包含性 warp 扫描
         uint warpResult = warpScanInclusive(threadIndex, idata, sScratch, WARP_SIZE);
 
         // Save top elements of each warp for exclusive warp scan sync
         // to wait for warp scans to complete (because s_Data is being
         // overwritten)
+        // 保存每个 warp 的最高元素用于排他性 warp 扫描同步，
+        // 等待 warp 扫描完成（因为 s_Data 正在被覆写）
         __syncthreads();
 
         if ( (threadIndex & (WARP_SIZE - 1)) == (WARP_SIZE - 1) )
             sScratch[threadIndex >> LOG2_WARP_SIZE] = warpResult;
 
-        // wait for warp scans to complete
+        // wait for warp scans to complete / 等待 warp 扫描完成
         __syncthreads();
 
         if ( threadIndex < (SCAN_BLOCK_DIM / WARP_SIZE)) {
-            // grab top warp elements
+            // grab top warp elements / 获取顶层 warp 元素
             uint val = sScratch[threadIndex];
             // calculate exclusive scan and write back to shared memory
+            // 计算排他性扫描并写回共享内存
             sScratch[threadIndex] = warpScanExclusive(threadIndex, val, sScratch, size >> LOG2_WARP_SIZE);
         }
 
-        //return updated warp scans with exclusive scan results
+        // return updated warp scans with exclusive scan results
+        // 返回更新后的 warp 扫描与排他性扫描结果
         __syncthreads();
 
         sOutput[threadIndex] = warpResult + sScratch[threadIndex >> LOG2_WARP_SIZE] - idata;

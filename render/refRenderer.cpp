@@ -343,6 +343,12 @@ RefRenderer::shadePixel(
     // circle 1's contribution *must* be blended in first, then
     // circle 2's.  If this invariant is not preserved, the
     // rendering of transparent circles will not be correct.
+    //
+    // 以下代码【非常重要】：它将圆形图元的颜色贡献与输出图像像素的当前状态进行混合。
+    // 这是对图像的“读取-修改-写回 (read-modify-write)”操作，它必须是原子的。
+    // 此外（也是更具挑战性的一点），对该像素的所有写入必须按照与串行处理圆形时完全相同的顺序执行。
+    // 也就是说，如果圆 1 和圆 2 都要写入像素 P，则圆 1 的贡献【必须】先混合进去，然后才是圆 2 的贡献。
+    // 如果无法维持此不变量，透明圆形的渲染将不正确。
 
     float oneMinusAlpha = 1.f - alpha;
     pixelData[0] = alpha * colR + oneMinusAlpha * pixelData[0];
@@ -354,7 +360,7 @@ RefRenderer::shadePixel(
 void
 RefRenderer::render() {
 
-    // render all circles
+    // render all circles / 渲染所有圆形
     for (int circleIndex=0; circleIndex<numCircles; circleIndex++) {
 
         int index3 = 3 * circleIndex;
@@ -366,6 +372,7 @@ RefRenderer::render() {
 
         // compute the bounding box of the circle.  This bounding box
         // is in normalized coordinates
+        // 计算圆形的包围盒。该包围盒位于归一化坐标空间 [0, 1] 中
         float minX = px - rad;
         float maxX = px + rad;
         float minY = py - rad;
@@ -373,6 +380,7 @@ RefRenderer::render() {
 
         // convert normalized coordinate bounds to integer screen
         // pixel bounds.  Clamp to the edges of the screen.
+        // 将归一化坐标范围转换为整数屏幕像素范围。截断到屏幕边缘。
         int screenMinX = CLAMP(static_cast<int>(minX * image->width), 0, image->width);
         int screenMaxX = CLAMP(static_cast<int>(maxX * image->width)+1, 0, image->width);
         int screenMinY = CLAMP(static_cast<int>(minY * image->height), 0, image->height);
@@ -386,9 +394,11 @@ RefRenderer::render() {
         // the function shadePixel.  Since the circle does not fill
         // the bounding box entirely, not every pixel in the box will
         // receive contribution.
+        // 对于包围盒内的每个像素，确定圆对该像素的贡献。
+        // 贡献在函数 shadePixel 中计算。由于圆并没有完全填满包围盒，因此盒内的并非每个像素都会接收到贡献。
         for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
 
-            // pointer to pixel data
+            // pointer to pixel data / 指向像素数据的指针
             float* imgPtr = &image->data[4 * (pixelY * image->width + screenMinX)];
 
             for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
@@ -401,6 +411,9 @@ RefRenderer::render() {
                 // normalized [0,1]^2 coordinate space, so we convert
                 // the pixel center into this coordinate space prior
                 // to calling shadePixel.
+                // 当“着色”像素时（“着色”= 计算圆在该像素处的颜色和不透明度），我们将像素视为像素中心的一个点。
+                // 我们将计算圆在该点处的颜色。请注意，着色数学运算发生在归一化 [0,1]^2 坐标空间中，
+                // 因此我们在调用 shadePixel 之前将像素中心转换为该坐标空间。
                 float pixelCenterNormX = invWidth * (static_cast<float>(pixelX) + 0.5f);
                 float pixelCenterNormY = invHeight * (static_cast<float>(pixelY) + 0.5f);
                 shadePixel(circleIndex, pixelCenterNormX, pixelCenterNormY, px, py, pz, imgPtr);

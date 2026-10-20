@@ -30,6 +30,8 @@ void cpu_exclusive_scan(int* start, int* end, int* output) {
     // note to students: this C code can be helpful when debugging the
     // output of intermediate steps of your CUDA segmented scan.
     // Uncomment the line above to use it as a reference.
+    // 给学生的提示：此 C 代码在调试 CUDA 扫描中间步骤的输出时非常有用。
+    // 取消注释上面一行（#define PARALLEL 1）即可将其用作参考。
   
     int N = end - start;
     memmove(output, start, N*sizeof(int));

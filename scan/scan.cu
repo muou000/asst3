@@ -16,6 +16,7 @@
 
 
 // helper function to round an integer up to the next power of 2
+// 辅助函数：将整数向上舍入为下一个 2 的幂次方
 static inline int nextPow2(int n) {
     n--;
     n |= n >> 1;
@@ -42,6 +43,15 @@ static inline int nextPow2(int n) {
 // Also, as per the comments in cudaScan(), you can implement an
 // "in-place" scan, since the timing harness makes a copy of input and
 // places it in result
+//
+// exclusive_scan --
+// 在全局内存数组 `input` 上实现排他性扫描 (exclusive scan)，并将结果放入全局内存 `result` 中。
+//
+// N 是输入和输出数组的逻辑大小，但学生可以假定 start 和 result 数组都是按照 cudaScan() 注释中所述
+// 的下一个 2 的幂次方大小分配的。这很有用，因为你的并行 scan 可能会写入超过 N 的内存位置，
+// 但当然不会超过 N 向上舍入后的下一个 2 的幂。
+//
+// 此外，根据 cudaScan() 中的注释，你可以实现“原地 (in-place)”扫描，因为测试框架会复制 input 并放入 result 中。
 void exclusive_scan(int* input, int N, int* result)
 {
 
@@ -53,6 +63,11 @@ void exclusive_scan(int* input, int N, int* result)
     // on the CPU.  Your implementation will need to make multiple calls
     // to CUDA kernel functions (that you must write) to implement the
     // scan.
+    //
+    // CS149 待办事项：
+    // 在此处实现你的排他性扫描 (exclusive scan)。
+    // 请记住：虽然此函数的参数是在设备上分配的数组，但此函数本身是在 CPU 线程上运行的。
+    // 你的实现需要多次调用 CUDA 核函数（你需要自己编写这些核函数）来完成扫描。
 
 
 }
@@ -65,6 +80,10 @@ void exclusive_scan(int* input, int N, int* result)
 // implementation of scan - it copies the input to the GPU
 // and times the invocation of the exclusive_scan() function
 // above. Students should not modify it.
+//
+// cudaScan --
+// 此函数是围绕学生实现的 scan 的计时包装器 —— 它将输入复制到 GPU，
+// 并对上面 exclusive_scan() 函数的调用进行计时。学生不应修改此函数。
 double cudaScan(int* inarray, int* end, int* resultarray)
 {
     int* device_result;
@@ -79,6 +98,11 @@ double cudaScan(int* inarray, int* end, int* resultarray)
     // allocated length is a power of 2 for simplicity. This will
     // result in extra work on non-power-of-2 inputs, but it's worth
     // the simplicity of a power of two only solution.
+    //
+    // 此代码将提供给 exclusive_scan 的数组长度向上取整到 2 的幂，
+    // 但超出原始输入末尾的元素保持未初始化状态，且不会检查其正确性。
+    // 为简便起见，学生实现的 exclusive_scan 可以假定数组的分配长度为 2 的幂。
+    // 这会在非 2 的幂输入上导致额外的计算工作，但换取仅支持 2 的幂解法的简洁性是值得的。
 
     int rounded_length = nextPow2(end - inarray);
     
@@ -90,6 +114,9 @@ double cudaScan(int* inarray, int* end, int* resultarray)
     // students are free to implement an in-place scan on the result
     // vector if desired.  If you do this, you will need to keep this
     // in mind when calling exclusive_scan from find_repeats.
+    // 为方便起见，设备上的输入和输出向量都初始化为输入数组的值。
+    // 这意味着如果需要，学生可以在 result 向量上自由实现原地扫描。
+    // 如果你这样做，在从 find_repeats 调用 exclusive_scan 时需要记住这一点。
     cudaMemcpy(device_input, inarray, (end - inarray) * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(device_result, inarray, (end - inarray) * sizeof(int), cudaMemcpyHostToDevice);
 
@@ -97,7 +124,7 @@ double cudaScan(int* inarray, int* end, int* resultarray)
 
     exclusive_scan(device_input, N, device_result);
 
-    // Wait for completion
+    // Wait for completion / 等待 GPU 完成
     cudaDeviceSynchronize();
     double endTime = CycleTimer::currentSeconds();
        
@@ -116,6 +143,11 @@ double cudaScan(int* inarray, int* end, int* resultarray)
 //
 // Students are not expected to produce implementations that achieve
 // performance that is competition to the Thrust version, but it is fun to try.
+//
+// cudaScanThrust --
+// 对 Thrust 库 exclusive scan 函数的包装。
+// 与上面的 cudaScan() 类似，此函数将输入复制到 GPU，且仅对 scan 本身的执行进行计时。
+// 不要求学生实现的性能达到与 Thrust 版本竞争的水平，但尝试一下很有趣。
 double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 
     int length = end - inarray;
@@ -147,6 +179,10 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 // indices `i` for which `device_input[i] == device_input[i+1]`.
 //
 // Returns the total number of pairs found
+//
+// find_repeats --
+// 给定整数数组 `device_input`，返回满足 `device_input[i] == device_input[i+1]` 的所有下标 `i` 的数组。
+// 返回找到的相邻重复对的总数。
 int find_repeats(int* device_input, int length, int* device_output) {
 
     // CS149 TODO:
@@ -160,6 +196,13 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // exclusive_scan function with them. However, your implementation
     // must ensure that the results of find_repeats are correct given
     // the actual array length.
+    //
+    // CS149 待办事项：
+    // 实现此函数。你可能需要使用一次或多次 exclusive_scan() 调用，以及额外的 CUDA 核函数启动。
+    //
+    // 注意：与 scan 代码中一样，调用方代码确保分配的数组大小为 2 的幂，
+    // 因此你可以对它们使用你的 exclusive_scan 函数。
+    // 但是，在给定实际数组长度的情况下，你的实现必须确保 find_repeats 的结果是正确的。
 
     return 0; 
 }
@@ -169,6 +212,7 @@ int find_repeats(int* device_input, int length, int* device_output) {
 // cudaFindRepeats --
 //
 // Timing wrapper around find_repeats. You should not modify this function.
+// 对 find_repeats 的计时包装器。你不应修改此函数。
 double cudaFindRepeats(int *input, int length, int *output, int *output_length) {
 
     int *device_input;
@@ -187,7 +231,7 @@ double cudaFindRepeats(int *input, int length, int *output, int *output_length) 
     cudaDeviceSynchronize();
     double endTime = CycleTimer::currentSeconds();
 
-    // set output count and results array
+    // set output count and results array / 设置输出计数与结果数组
     *output_length = result;
     cudaMemcpy(output, device_output, length * sizeof(int), cudaMemcpyDeviceToHost);
 

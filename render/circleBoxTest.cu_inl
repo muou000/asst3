@@ -12,6 +12,14 @@
 // make a subsequent call to circleInBox().
 // Note: For a valid Box, you will want to use boxR >= boxL and 
 // boxT >= boxB. 
+//
+// circleInBoxConservative --
+// 测试圆心为 (circleX, circleY)、半径为 `circleRadius` 的圆是否 *可能与矩形框相交*。
+// 矩形框由左(boxL)、右(boxR)、上(boxT)、下(boxB)边界坐标定义。
+// 出于效率考虑，这是一个保守的测试（粗筛）：
+// 如果返回 0，则该圆绝对不与矩形框相交；
+// 但是返回 1 并不意味着相交一定存在，还需要进一步的测试（例如继续进行实际的点在圆内测试，或调用下面的 circleInBox()）。
+// 注意：对于有效的矩形框，需要满足 boxR >= boxL 且 boxT >= boxB。
 __device__ __inline__ int
 circleInBoxConservative(
     float circleX, float circleY, float circleRadius,
@@ -20,6 +28,7 @@ circleInBoxConservative(
 
     // expand box by circle radius.  Test if circle center is in the
     // expanded box.
+    // 将矩形框向外膨胀 circleRadius 大小。测试圆心是否在膨胀后的矩形框内。
 
     if ( circleX >= (boxL - circleRadius) &&
          circleX <= (boxR + circleRadius) &&
@@ -39,6 +48,11 @@ circleInBoxConservative(
 // definitive result.
 // Note: For a valid Box, you will want to use boxR >= boxL and 
 // boxT >= boxB. 
+//
+// circleInBox --
+// 这是一个精确的圆与矩形框相交测试。它比上面的 circleInBoxConservative 耗时更多，
+// 但其 1/0 返回结果是完全确切的判定。
+// 注意：对于有效的矩形框，需要满足 boxR >= boxL 且 boxT >= boxB。
 __device__ __inline__ int
 circleInBox(
     float circleX, float circleY, float circleRadius,
@@ -46,11 +60,13 @@ circleInBox(
 {
 
     // clamp circle center to box (finds the closest point on the box)
+    // 将圆心截断限制在矩形框内（找到矩形框上距离圆心最近的点）
     float closestX = (circleX > boxL) ? ((circleX < boxR) ? circleX : boxR) : boxL;
     float closestY = (circleY > boxB) ? ((circleY < boxT) ? circleY : boxT) : boxB;
 
     // is circle radius less than the distance to the closest point on
     // the box?
+    // 圆的半径平方是否小于到矩形框最近点的距离平方？
     float distX = closestX - circleX;
     float distY = closestY - circleY;
 
