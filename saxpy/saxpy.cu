@@ -96,6 +96,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // https://devblogs.nvidia.com/easy-introduction-cuda-c-and-c/
     //
+    cudaMalloc(&device_x, sizeof(float) * N);
+    cudaMalloc(&device_y, sizeof(float) * N);
+    cudaMalloc(&device_result, sizeof(float) * N);
 
     // start timing after allocation of device memory
     // 设备显存分配完成后开始计时
@@ -105,7 +108,8 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // CS149 TODO: copy input arrays to the GPU using cudaMemcpy
     // CS149 待办事项：使用 cudaMemcpy 将输入数组复制到 GPU
     //
-
+    cudaMemcpy(device_x, xarray, sizeof(float) * N, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_y, yarray, sizeof(float) * N, cudaMemcpyHostToDevice);
 
     // run CUDA kernel. (notice the <<< >>> brackets indicating a CUDA
     // kernel launch) Execution on the GPU occurs here.
@@ -117,7 +121,7 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // CS149 TODO: copy result from GPU back to CPU using cudaMemcpy
     // CS149 待办事项：使用 cudaMemcpy 将结果从 GPU 复制回 CPU
     //
-
+    cudaMemcpy(resultarray, device_result, sizeof(float) * N, cudaMemcpyDeviceToHost);
 
     // end timing after result has been copied back into host memory
     // 结果复制回主机内存后结束计时
@@ -136,7 +140,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // CS149 TODO: free memory buffers on the GPU using cudaFree
     // CS149 待办事项：使用 cudaFree 释放在 GPU 上的显存缓冲区
     //
-
+    cudaFree(device_x);
+    cudaFree(device_y);
+    cudaFree(device_result);
 }
 
 void printCudaInfo() {
